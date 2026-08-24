@@ -42,45 +42,55 @@
 
 ## L1 Analyst Note
 
-During initial triage, RDP brute-force activity was observed prior to a successful logon on the host. Shortly after authentication, the attacker executed reconnaissance commands via PowerShell. The associated binary hash returned a malicious verdict on VirusTotal. The alert was escalated for further investigation.
+During initial triage, I noticed there were multiple failed login attempts to the host over RDP (RDP is just how someone remotely connects to and controls a Windows computer, like a remote desktop) right before a successful login happened. This pattern usually means someone was guessing the password repeatedly until they got in, known as a brute-force attack.
+
+Right after logging in, the attacker ran some commands using PowerShell (a built-in Windows tool that lets you run commands and scripts) to look around the system — this is normally done to gather information about the machine before doing anything else.
+
+Then I looked into the file that was executed, called EDR-Freeze. I hadn't heard of this before, so I researched it. EDR-Freeze is a known attacker tool used to temporarily "freeze" or pause security software (like antivirus/EDR tools) on a computer, without actually shutting it down or uninstalling it. The idea is that while the security software is frozen, it can't detect or block whatever the attacker does next — but because it's not fully turned off, it can look less suspicious than if the attacker had disabled it outright.
+
+I also checked the hash (a unique fingerprint) of the file that was run, and VirusTotal (a site that scans files against many antivirus engines) confirmed it was malicious. This wasn't a false alarm.
 
 ---
 
 ## Investigation Timeline
 
-1. **Initial Access** – Repeated RDP authentication attempts against WS-Prod-02 preceded a successful logon, consistent with a brute-force attack (T1078 – Valid Accounts).
-2. **Discovery/Reconnaissance** – Following logon, PowerShell (`powershell.exe`) was used to run reconnaissance-style commands (T1059.001).
-3. **Defense Evasion** – `powershell.exe` spawned `EDR-Freeze_1.0.exe` from `C:\Users\LetsDefend\Downloads\`, executed with arguments `6080 10000`. EDR-Freeze is a known technique that abuses legitimate Windows mechanisms (WER/process suspension) to temporarily suspend or "freeze" EDR/AV processes, effectively blinding endpoint defenses without formally terminating them (T1562 / T1562.001 – Impair Defenses; T1489 – Service Stop; T1055 – Process Injection, as the tool leverages process manipulation to suspend the target process).
-4. **Detection Gap** – The device action logged for this process was "Allowed," indicating the tampering attempt was not blocked at execution time, which is the intended effect of an EDR-Freeze style attack — the goal is to run undetected while the endpoint agent is suspended.
-5. **Hash Verification** – The SHA256 hash of the executed binary was checked against VirusTotal and returned a malicious verdict, confirming this was not a false positive.
+1. **Initial Access** – There were repeated failed RDP login attempts on the host, followed by a successful login. This looks like a brute-force attack, where someone kept guessing the password until it worked.
+2. **Looking Around (Recon)** – Once logged in, the attacker used PowerShell to run commands, likely to gather information about the system.
+3. **Disabling Security Tools** – PowerShell was then used to launch the EDR-Freeze tool from the Downloads folder. This tool is designed to pause the security software running on the machine so it can't catch what happens next.
+4. **Not Blocked** – The system logs showed this action was "Allowed," meaning the security tool didn't stop it. This makes sense, since the whole point of EDR-Freeze is to sneak past defenses without triggering an obvious block.
+5. **Confirming It's Malicious** – I checked the file's hash on VirusTotal, and it came back malicious, confirming this wasn't a mistake or a harmless file.
 
 ---
 
-## Analysis & Reasoning
+## My Reasoning
 
-EDR-Freeze is a publicly known red-team/attacker tool that abuses the Windows Error Reporting (WER) process (`WerFaultSecure.exe`) to suspend a target process — in this case, the EDR/AV agent — without killing it outright. This is significant because:
+Putting it together, this looked like a real attack, not a false alarm, because:
 
-- Suspending (rather than killing) an EDR process can evade detections that specifically watch for process termination or service stops.
-- The attacker chain here (RDP brute force → successful logon → PowerShell recon → EDR-Freeze execution) follows a classic post-compromise defense-evasion playbook: gain access, look around, then blind the defenses before proceeding to further objectives (e.g., lateral movement, data exfiltration, or ransomware deployment).
-- The fact that this was "Allowed" by the endpoint control underscores why detection engineering (behavioral/EDR-tampering detections) matters more than relying solely on signature-based blocking.
+- Someone got in through repeated login guessing (brute force), which is already suspicious on its own.
+- Right after getting in, they didn't waste time — they looked around the system and then tried to disable the security tool, which is a common next step for attackers before doing something bigger (like spreading to other computers or stealing/encrypting data).
+- The file used to disable security software was confirmed malicious by VirusTotal, so there was solid evidence backing this up, not just a hunch.
 
 ## Verdict
 
 **True Positive – Malicious**
 
-## Recommended Response Actions
+## What I'd Recommend Doing Next
 
-- Isolate WS-Prod-02 from the network immediately to contain further activity.
-- Kill the `EDR-Freeze_1.0.exe` process and verify the EDR/AV agent has resumed normal function.
-- Reset credentials for the account used in the successful RDP logon; review for reuse elsewhere.
-- Block the SHA256 hash across the environment (EDR/AV, proxy, mail gateway as applicable).
-- Review RDP exposure — restrict via VPN/jump host, enforce MFA, and enable account lockout policies to mitigate brute-force attempts.
-- Hunt across the environment for the same hash, the EDR-Freeze command-line pattern, and any other hosts with a similar PowerShell → suspicious-binary execution chain.
-- Escalate to IR team for full forensic timeline and to confirm scope (was this isolated to WS-Prod-02, or part of a broader campaign?).
+- Disconnect the affected computer from the network right away so the attacker can't do anything further on it.
+- Stop the malicious process and make sure the security software is working normally again.
+- Change the password for the account that was used to log in, since it was clearly compromised.
+- Block this file (using its hash) across the company so it can't run on any other computer.
+- Look into why RDP was accessible enough to be brute-forced — this should probably be locked down further, or require extra verification (like MFA) to log in.
+- Check other computers for the same file or similar suspicious activity, in case this wasn't limited to just one machine.
+- Hand this off to the incident response team so they can dig deeper and confirm whether anything else happened on the network.
 
-## Lessons Learned
+## What I Learned
 
-EDR-tampering tools like EDR-Freeze highlight the importance of monitoring for *process suspension* events, not just process termination — many detection rules focus on kills/uninstalls and miss suspension-based evasion. Behavioral detections around WER-related process manipulation and unusual PowerShell → downloaded-binary execution chains would have provided earlier warning.
+I didn't know what EDR-Freeze was before this alert, and that's okay — the important part was recognizing the pattern: someone got in, looked around, and then tried to turn off the security tool. That sequence itself is a big red flag, even before knowing the exact tool being used. This alert taught me that I don't need to know every attacker tool by name; I just need to know how to research something unfamiliar quickly and make a confident, well-supported decision.
+
+---
+
+*Write-up by Farhan Mazher | LetsDefend SOC Alert Investigation*
 
 ---
 
