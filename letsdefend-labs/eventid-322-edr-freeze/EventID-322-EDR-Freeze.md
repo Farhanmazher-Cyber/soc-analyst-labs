@@ -91,7 +91,3 @@ I didn't know what EDR-Freeze was before this alert, and that's okay — the imp
 ---
 
 *Write-up by Farhan Mazher | LetsDefend SOC Alert Investigation*
-
----
-
-*Write-up by Farhan Mazher | LetsDefend SOC Alert Investigation*
